@@ -1,0 +1,110 @@
+[project]
+name = "sentence-transformers"
+version = "5.4.0.dev0"
+description = "Embeddings, Retrieval, and Reranking"
+license = { text = "Apache 2.0" }
+readme = "README.md"
+authors = [
+    { name = "Nils Reimers", email = "info@nils-reimers.de" },
+    { name = "Tom Aarsen", email = "tom.aarsen@huggingface.co" },
+]
+maintainers = [
+    { name = "Tom Aarsen", email = "tom.aarsen@huggingface.co" }
+]
+requires-python = ">=3.10"
+keywords = [
+    "Transformer Networks",
+    "BERT",
+    "XLNet",
+    "sentence embedding",
+    "PyTorch",
+    "NLP",
+    "deep learning",
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "transformers>=4.41.0,<6.0.0",
+    "huggingface-hub>=0.20.0",
+    "torch>=1.11.0",
+    "numpy",
+    "scikit-learn",
+    "scipy",
+    "typing_extensions>=4.5.0",
+    "tqdm",
+]
+
+[project.urls]
+Homepage = "https://www.SBERT.net"
+Repository = "https://github.com/huggingface/sentence-transformers/"
+
+
+[project.optional-dependencies]
+image = ["Pillow"]
+train = ["datasets", "accelerate>=0.20.3"]
+onnx = ["optimum-onnx[onnxruntime]"]
+onnx-gpu = ["optimum-onnx[onnxruntime-gpu]"]
+openvino = ["optimum-intel[openvino]"]
+dev = ["datasets", "accelerate>=0.20.3", "pre-commit", "pytest", "pytest-cov", "pytest-env", "peft", "Pillow"]
+
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["sentence_transformers*"]
+namespaces = false
+
+[tool.ruff]
+line-length = 119
+fix = true
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP"]
+# Skip `E731` (do not assign a lambda expression, use a def)
+ignore = [
+    # LineTooLong
+    "E501",
+    # DoNotAssignLambda
+    "E731"
+]
+
+[tool.ruff.lint.per-file-ignores]
+"examples/**" = [
+    # Ignore `E402` (import violations) in all examples
+    "E402", 
+    # Ignore missing required imports
+    "I002"
+    ]
+"docs/**" = [
+    # Ignore missing required imports
+    "I002"
+    ]
+
+[tool.ruff.lint.isort]
+known-third-party = ["datasets"]
+required-imports = ["from __future__ import annotations"]
+
+
+[tool.pytest.ini_options]
+testpaths = [
+    "tests"
+]
+addopts = "--strict-markers -m 'not slow and not custom'"
+markers = [
+    "slow: marks tests as slow",
+    "custom: marks tests for third-party models with custom modules"
+]
+env = [
+    # Avoid any ReadTimeout when making requests to the Hub (default is 10)
+    # Note: 'D:' means default value from laptop or CI won't be overwritten
+    "D:HF_HUB_DOWNLOAD_TIMEOUT=60",
+]
