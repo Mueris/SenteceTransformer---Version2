@@ -252,6 +252,50 @@ class TestEmbeddingCache:
         assert results[1]["text"] in corpus
         assert results[0]["score"] >= results[1]["score"]
 
+    def test_semantic_search_expanded_queries(self, model):
+        """Test semantic_search with expanded queries merges results."""
+        query = "What is machine learning?"
+        corpus = [
+            "Machine learning enables computers to learn from data.",
+            "Machine learning is a subset of artificial intelligence.",
+            "Pizza is delicious.",
+            "Deep learning uses neural networks.",
+        ]
+
+        results = model.semantic_search(
+            query,
+            corpus,
+            top_k=2,
+            use_expanded_queries=True,
+            expand_top_k=3,
+            expand_threshold=0.6,
+        )
+
+        assert len(results) == 2
+        assert {"corpus_id", "score", "text"} <= results[0].keys()
+
+    def test_hybrid_search_expanded_queries(self, model):
+        """Test hybrid_search with expanded queries merges results."""
+        query = "What is machine learning?"
+        corpus = [
+            "Machine learning enables computers to learn from data.",
+            "Machine learning is a subset of artificial intelligence.",
+            "Pizza is delicious.",
+            "Deep learning uses neural networks.",
+        ]
+
+        results = model.hybrid_search(
+            query,
+            corpus,
+            top_k=2,
+            use_expanded_queries=True,
+            expand_top_k=3,
+            expand_threshold=0.6,
+        )
+
+        assert len(results) == 2
+        assert {"corpus_id", "score", "text"} <= results[0].keys()
+
     def test_semantic_search_top_k_bounds(self, model):
         """Test semantic_search handles top_k larger than corpus size."""
         query = "Test query"
@@ -510,3 +554,254 @@ class TestEmbeddingCache:
         assert index.corpus == []
         assert index.search("Query", top_k=2) == []
         assert index.search_batch(["Query"], top_k=2) == []
+
+    def test_hybrid_search_basic(self, model):
+        """Test hybrid_search returns ranked results with text."""
+        query = "Weather today"
+        corpus = [
+            "The weather is lovely today.",
+            "I like pizza with cheese.",
+            "It is sunny outside.",
+            "Driving to the stadium.",
+        ]
+
+        results = model.hybrid_search(query, corpus, top_k=2)
+
+        assert len(results) == 2
+        assert {"corpus_id", "score", "text"} <= results[0].keys()
+        assert results[0]["text"] in corpus
+        assert results[1]["text"] in corpus
+        assert results[0]["score"] >= results[1]["score"]
+
+    def test_hybrid_search_precomputed_embeddings(self, model):
+        """Test hybrid_search with precomputed corpus embeddings."""
+        query = "Tell me about pizza"
+        corpus = [
+            "The weather is lovely today.",
+            "Pizza is delicious.",
+            "I like pizza with cheese.",
+            "Driving to the stadium.",
+        ]
+        corpus_embeddings = model.encode(corpus, convert_to_tensor=True)
+
+        results_precomputed = model.hybrid_search(
+            query,
+            corpus,
+            top_k=2,
+            corpus_embeddings=corpus_embeddings,
+        )
+        results_encoded = model.hybrid_search(query, corpus, top_k=2)
+
+        assert [result["corpus_id"] for result in results_precomputed] == [
+            result["corpus_id"] for result in results_encoded
+        ]
+
+    def test_hybrid_search_batch_basic(self, model):
+        """Test hybrid_search_batch returns results per query."""
+        queries = ["Weather today", "Tell me about pizza"]
+        corpus = [
+            "The weather is lovely today.",
+            "It's sunny outside.",
+            "Pizza is delicious.",
+            "Driving to the stadium.",
+        ]
+
+        results = model.hybrid_search_batch(queries, corpus, top_k=2)
+
+        assert len(results) == len(queries)
+        assert all(len(query_results) == 2 for query_results in results)
+        assert all({"corpus_id", "score", "text"} <= query_results[0].keys() for query_results in results)
+
+    def test_hybrid_search_index_search_matches_hybrid_search(self, model):
+        """Test hybrid index search matches hybrid_search with precomputed embeddings."""
+        query = "Sentence one"
+        corpus = ["Sentence one.", "Sentence two.", "Sentence three."]
+        corpus_embeddings = model.encode(corpus, convert_to_tensor=True)
+
+        index = model.build_hybrid_search_index(corpus, corpus_embeddings=corpus_embeddings)
+
+        index_results = index.search(query, top_k=2)
+        direct_results = model.hybrid_search(
+            query,
+            corpus,
+            top_k=2,
+            corpus_embeddings=corpus_embeddings,
+            bm25_index=index.bm25_index,
+        )
+
+        assert [result["corpus_id"] for result in index_results] == [
+            result["corpus_id"] for result in direct_results
+        ]
+
+    def test_index_search_with_expanded_queries(self, model):
+        """Test index search with use_expanded_queries option."""
+        query = "What is machine learning?"
+        corpus = [
+            "Machine learning enables computers to learn from data.",
+            "Machine learning is a subset of artificial intelligence.",
+            "Pizza is delicious.",
+            "Deep learning uses neural networks.",
+        ]
+        corpus_embeddings = model.encode(corpus, convert_to_tensor=True)
+
+        index = model.build_search_index(corpus, corpus_embeddings=corpus_embeddings)
+
+        # Test with expanded queries
+        results = index.search(
+            query,
+            top_k=2,
+            use_expanded_queries=True,
+            expand_top_k=3,
+            expand_threshold=0.6,
+        )
+
+        assert len(results) == 2
+        assert {"corpus_id", "score", "text"} <= results[0].keys()
+
+    def test_index_search_with_hybrid_search(self, model):
+        """Test index search with use_hybrid_search option."""
+        query = "What is machine learning?"
+        corpus = [
+            "Machine learning enables computers to learn from data.",
+            "Machine learning is a subset of artificial intelligence.",
+            "Pizza is delicious.",
+            "Deep learning uses neural networks.",
+        ]
+        corpus_embeddings = model.encode(corpus, convert_to_tensor=True)
+
+        index = model.build_search_index(corpus, corpus_embeddings=corpus_embeddings)
+
+        # Test with hybrid search
+        results = index.search(
+            query,
+            top_k=2,
+            use_hybrid_search=True,
+        )
+
+        assert len(results) == 2
+        assert {"corpus_id", "score", "text"} <= results[0].keys()
+
+    def test_index_search_with_hybrid_and_expanded(self, model):
+        """Test index search with both hybrid and expanded queries."""
+        query = "What is machine learning?"
+        corpus = [
+            "Machine learning enables computers to learn from data.",
+            "Machine learning is a subset of artificial intelligence.",
+            "Pizza is delicious.",
+            "Deep learning uses neural networks.",
+        ]
+        corpus_embeddings = model.encode(corpus, convert_to_tensor=True)
+
+        index = model.build_search_index(corpus, corpus_embeddings=corpus_embeddings)
+
+        # Test with both hybrid search and expanded queries
+        results = index.search(
+            query,
+            top_k=2,
+            use_hybrid_search=True,
+            use_expanded_queries=True,
+            expand_top_k=3,
+            expand_threshold=0.6,
+        )
+
+        assert len(results) == 2
+        assert {"corpus_id", "score", "text"} <= results[0].keys()
+
+    def test_hybrid_index_search_with_expanded_queries(self, model):
+        """Test hybrid search index with use_expanded_queries option."""
+        query = "What is machine learning?"
+        corpus = [
+            "Machine learning enables computers to learn from data.",
+            "Machine learning is a subset of artificial intelligence.",
+            "Pizza is delicious.",
+            "Deep learning uses neural networks.",
+        ]
+        corpus_embeddings = model.encode(corpus, convert_to_tensor=True)
+
+        index = model.build_hybrid_search_index(corpus, corpus_embeddings=corpus_embeddings)
+
+        # Test with expanded queries
+        results = index.search(
+            query,
+            top_k=2,
+            use_expanded_queries=True,
+            expand_top_k=3,
+            expand_threshold=0.6,
+        )
+
+        assert len(results) == 2
+        assert {"corpus_id", "score", "text"} <= results[0].keys()
+
+    def test_bm25_index_search_with_expanded_queries(self, model):
+        """Test BM25 search index with use_expanded_queries option."""
+        query = "What is machine learning?"
+        corpus = [
+            "Machine learning enables computers to learn from data.",
+            "Machine learning is a subset of artificial intelligence.",
+            "Pizza is delicious.",
+            "Deep learning uses neural networks.",
+        ]
+
+        index = model.build_bm25_index(corpus)
+
+        # Test with expanded queries
+        results = index.search(
+            query,
+            top_k=2,
+            use_expanded_queries=True,
+            expand_top_k=3,
+            expand_threshold=0.6,
+        )
+
+        assert len(results) == 2
+        assert {"corpus_id", "score", "text"} <= results[0].keys()
+
+    def test_index_search_batch_with_expanded_queries(self, model):
+        """Test index search_batch with use_expanded_queries option."""
+        queries = ["What is machine learning?", "What is deep learning?"]
+        corpus = [
+            "Machine learning enables computers to learn from data.",
+            "Machine learning is a subset of artificial intelligence.",
+            "Deep learning uses neural networks.",
+            "Pizza is delicious.",
+        ]
+        corpus_embeddings = model.encode(corpus, convert_to_tensor=True)
+
+        index = model.build_search_index(corpus, corpus_embeddings=corpus_embeddings)
+
+        # Test search_batch with expanded queries
+        results = index.search_batch(
+            queries,
+            top_k=2,
+            use_expanded_queries=True,
+            expand_top_k=3,
+            expand_threshold=0.6,
+        )
+
+        assert len(results) == 2
+        assert len(results[0]) == 2
+        assert {"corpus_id", "score", "text"} <= results[0][0].keys()
+
+    def test_index_search_batch_with_hybrid_search(self, model):
+        """Test index search_batch with use_hybrid_search option."""
+        queries = ["What is machine learning?", "What is deep learning?"]
+        corpus = [
+            "Machine learning enables computers to learn from data.",
+            "Machine learning is a subset of artificial intelligence.",
+            "Deep learning uses neural networks.",
+            "Pizza is delicious.",
+        ]
+        corpus_embeddings = model.encode(corpus, convert_to_tensor=True)
+
+        index = model.build_search_index(corpus, corpus_embeddings=corpus_embeddings)
+
+        # Test search_batch with hybrid search
+        results = index.search_batch(
+            queries,
+            top_k=2,
+            use_hybrid_search=True,
+        )
+
+        assert len(results) == 2
+        assert len(results[0]) == 2
+        assert {"corpus_id", "score", "text"} <= results[0][0].keys()

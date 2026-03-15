@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import heapq
 import logging
+import math
 import queue
+from collections import Counter
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -18,6 +21,14 @@ logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from sentence_transformers.SentenceTransformer import SentenceTransformer
+
+
+@dataclass(frozen=True)
+class Bm25Indexer:
+    idf: dict[str, float]
+    avg_doc_len: float
+    doc_len: list[int]
+    term_frequencies: list[Counter[str]]
 
 
 def paraphrase_mining(
@@ -162,6 +173,308 @@ def paraphrase_mining_embeddings(
 def information_retrieval(*args, **kwargs) -> list[list[dict[str, int | float]]]:
     """This function is deprecated. Use semantic_search instead"""
     return semantic_search(*args, **kwargs)
+
+
+def _tokenize_bm25(text: str) -> list[str]:
+    """Tokenize text for BM25 scoring using a simple lowercase split."""
+    return [token for token in text.lower().split() if token]
+
+
+def build_bm25_index(corpus: list[str]) -> Bm25Indexer:
+    """Build a lightweight BM25 index for a corpus.
+
+    Args:
+        corpus (List[str]): Corpus of documents.
+
+    Returns:
+        Bm25Indexer: Precomputed BM25 statistics.
+    """
+    if not corpus:
+        return Bm25Indexer(idf={}, avg_doc_len=0.0, doc_len=[], term_frequencies=[])
+
+    term_frequencies: list[Counter[str]] = []
+    doc_len: list[int] = []
+    document_frequency: Counter[str] = Counter()
+
+    for document in corpus:
+        tokens = _tokenize_bm25(document)
+        counts = Counter(tokens)
+        term_frequencies.append(counts)
+        doc_len.append(sum(counts.values()))
+        document_frequency.update(counts.keys())
+
+    corpus_size = len(corpus)
+    avg_doc_len = sum(doc_len) / corpus_size if corpus_size else 0.0
+    idf = {
+        term: math.log(1 + (corpus_size - freq + 0.5) / (freq + 0.5))
+        for term, freq in document_frequency.items()
+    }
+
+    return Bm25Indexer(
+        idf=idf,
+        avg_doc_len=avg_doc_len,
+        doc_len=doc_len,
+        term_frequencies=term_frequencies,
+    )
+
+
+def _bm25_scores(
+    index: Bm25Indexer,
+    query: str,
+    k1: float = 1.5,
+    b: float = 0.75,
+) -> list[float]:
+    """Compute BM25 scores for a single query against the indexed corpus."""
+    if not index.term_frequencies:
+        return []
+
+    tokens = _tokenize_bm25(query)
+    if not tokens:
+        return [0.0 for _ in index.term_frequencies]
+
+    scores = [0.0 for _ in index.term_frequencies]
+    for token in tokens:
+        if token not in index.idf:
+            continue
+        idf = index.idf[token]
+        for doc_idx, tf in enumerate(index.term_frequencies):
+            freq = tf.get(token, 0)
+            if freq == 0:
+                continue
+            doc_length = index.doc_len[doc_idx]
+            denom = freq + k1 * (1 - b + b * doc_length / index.avg_doc_len)
+            scores[doc_idx] += idf * (freq * (k1 + 1)) / denom
+
+    return scores
+
+
+def bm25_search(
+    query: str,
+    corpus: list[str],
+    top_k: int = 10,
+    index: Bm25Indexer | None = None,
+    k1: float = 1.5,
+    b: float = 0.75,
+) -> list[dict[str, int | float]]:
+    """Run BM25 search against a corpus.
+
+    Args:
+        query (str): Query string.
+        corpus (List[str]): Corpus of documents.
+        top_k (int, optional): Number of hits to return. Defaults to 10.
+        index (Optional[Bm25Indexer], optional): Precomputed BM25 index.
+        k1 (float, optional): BM25 k1 parameter. Defaults to 1.5.
+        b (float, optional): BM25 b parameter. Defaults to 0.75.
+
+    Returns:
+        List[Dict[str, Union[int, float]]]: List of hits containing corpus_id and score.
+    """
+    if not corpus:
+        return []
+
+    if index is None:
+        index = build_bm25_index(corpus)
+
+    scores = _bm25_scores(index, query, k1=k1, b=b)
+    if not scores:
+        return []
+
+    top_k = min(top_k, len(scores))
+    ranked = sorted(range(len(scores)), key=lambda idx: scores[idx], reverse=True)[:top_k]
+    return [{"corpus_id": idx, "score": float(scores[idx])} for idx in ranked]
+
+
+def hybrid_search(
+    query: str,
+    corpus: list[str],
+    query_embedding: Tensor,
+    corpus_embeddings: Tensor,
+    top_k: int = 10,
+    bm25_index: Bm25Indexer | None = None,
+    bm25_weight: float = 0.35,
+    dense_weight: float = 0.65,
+    k1: float = 1.5,
+    b: float = 0.75,
+) -> list[dict[str, int | float]]:
+    """Hybrid search that combines BM25 and dense similarity scores.
+
+    Args:
+        query (str): Query string.
+        corpus (List[str]): Corpus of documents.
+        query_embedding (Tensor): Query embedding tensor.
+        corpus_embeddings (Tensor): Corpus embedding tensor.
+        top_k (int, optional): Number of hits to return. Defaults to 10.
+        bm25_index (Optional[Bm25Indexer], optional): Precomputed BM25 index.
+        bm25_weight (float, optional): Weight for BM25 scores. Defaults to 0.35.
+        dense_weight (float, optional): Weight for dense scores. Defaults to 0.65.
+        k1 (float, optional): BM25 k1 parameter. Defaults to 1.5.
+        b (float, optional): BM25 b parameter. Defaults to 0.75.
+
+    Returns:
+        List[Dict[str, Union[int, float]]]: List of hits containing corpus_id and score.
+    """
+    if not corpus:
+        return []
+
+    if bm25_index is None:
+        bm25_index = build_bm25_index(corpus)
+
+    bm25_scores = _bm25_scores(bm25_index, query, k1=k1, b=b)
+    dense_scores = semantic_search(query_embedding, corpus_embeddings, top_k=len(corpus))
+
+    if not bm25_scores:
+        return []
+
+    dense_scores_map = {hit["corpus_id"]: float(hit["score"]) for hit in dense_scores[0]}
+    max_bm25 = max(bm25_scores) if bm25_scores else 0.0
+    max_dense = max(dense_scores_map.values()) if dense_scores_map else 0.0
+    max_bm25 = max_bm25 if max_bm25 > 0 else 1.0
+    max_dense = max_dense if max_dense > 0 else 1.0
+
+    combined_scores = []
+    for idx, bm25_score in enumerate(bm25_scores):
+        dense_score = dense_scores_map.get(idx, 0.0)
+        combined = bm25_weight * (bm25_score / max_bm25) + dense_weight * (dense_score / max_dense)
+        combined_scores.append(combined)
+
+    top_k = min(top_k, len(combined_scores))
+    ranked = sorted(range(len(combined_scores)), key=lambda idx: combined_scores[idx], reverse=True)[:top_k]
+    return [{"corpus_id": idx, "score": float(combined_scores[idx])} for idx in ranked]
+
+
+def hybrid_search_batch(
+    queries: list[str],
+    corpus: list[str],
+    query_embeddings: Tensor,
+    corpus_embeddings: Tensor,
+    top_k: int = 10,
+    bm25_index: Bm25Indexer | None = None,
+    bm25_weight: float = 0.35,
+    dense_weight: float = 0.65,
+    k1: float = 1.5,
+    b: float = 0.75,
+) -> list[list[dict[str, int | float]]]:
+    """Hybrid search for multiple queries."""
+    if not corpus or not queries:
+        return []
+
+    if bm25_index is None:
+        bm25_index = build_bm25_index(corpus)
+
+    if isinstance(query_embeddings, (np.ndarray, np.generic)):
+        query_embeddings = torch.from_numpy(query_embeddings)
+    elif isinstance(query_embeddings, list):
+        query_embeddings = torch.stack(query_embeddings)
+
+    if len(query_embeddings.shape) == 1:
+        query_embeddings = query_embeddings.unsqueeze(0)
+
+    if isinstance(corpus_embeddings, (np.ndarray, np.generic)):
+        corpus_embeddings = torch.from_numpy(corpus_embeddings)
+    elif isinstance(corpus_embeddings, list):
+        corpus_embeddings = torch.stack(corpus_embeddings)
+
+    if corpus_embeddings.device != query_embeddings.device:
+        query_embeddings = query_embeddings.to(corpus_embeddings.device)
+
+    dense_scores = semantic_search(query_embeddings, corpus_embeddings, top_k=len(corpus))
+
+    results = []
+    for query, dense_hits in zip(queries, dense_scores):
+        bm25_scores = _bm25_scores(bm25_index, query, k1=k1, b=b)
+        if not bm25_scores:
+            results.append([])
+            continue
+        dense_scores_map = {hit["corpus_id"]: float(hit["score"]) for hit in dense_hits}
+        max_bm25 = max(bm25_scores) if bm25_scores else 0.0
+        max_dense = max(dense_scores_map.values()) if dense_scores_map else 0.0
+        max_bm25 = max_bm25 if max_bm25 > 0 else 1.0
+        max_dense = max_dense if max_dense > 0 else 1.0
+
+        combined_scores = []
+        for idx, bm25_score in enumerate(bm25_scores):
+            dense_score = dense_scores_map.get(idx, 0.0)
+            combined = bm25_weight * (bm25_score / max_bm25) + dense_weight * (dense_score / max_dense)
+            combined_scores.append(combined)
+
+        top_k_for_query = min(top_k, len(combined_scores))
+        ranked = sorted(range(len(combined_scores)), key=lambda idx: combined_scores[idx], reverse=True)[:top_k_for_query]
+        results.append([{"corpus_id": idx, "score": float(combined_scores[idx])} for idx in ranked])
+
+    return results
+
+
+def expand_query(
+    model: "SentenceTransformer",
+    query: str,
+    corpus: list[str] | None = None,
+    top_k: int = 5,
+    threshold: float = 0.8,
+) -> list[str]:
+    """Generate expanded queries based on semantic similarity using embeddings.
+
+    This function generates additional queries that are semantically similar to the
+    original query. It uses the model's embedding capabilities to find or generate
+    semantically similar text, avoiding rule-based approaches.
+
+    Args:
+        model (SentenceTransformer): The SentenceTransformer model for encoding.
+        query (str): The original query string.
+        corpus (Optional[List[str]], optional): Optional corpus of sentences to
+            find similar ones. If provided, similar sentences are found from the
+            corpus using semantic similarity. Defaults to None.
+        top_k (int, optional): Maximum number of expanded queries to return.
+            Defaults to 5.
+        threshold (float, optional): Minimum cosine similarity threshold for
+            considering a query as expanded. Defaults to 0.8.
+
+    Returns:
+        List[str]: List of expanded queries that are semantically similar to
+            the original query. The original query is included if it meets the
+            threshold.
+
+    Example:
+        ::
+
+            from sentence_transformers import SentenceTransformer
+            from sentence_transformers.util import expand_query
+
+            model = SentenceTransformer("all-MiniLM-L6-v2")
+            corpus = ["Machine learning is AI.", "Deep learning uses neural nets."]
+            expanded = expand_query(model, "What is ML?", corpus=corpus, top_k=3)
+    """
+    if not query:
+        return []
+
+    # Build candidates list
+    candidates = [query]
+    if corpus:
+        candidates.extend(corpus)
+
+    # Use paraphrase mining to find semantically similar sentences
+    pairs = paraphrase_mining(
+        model,
+        candidates,
+        max_pairs=top_k * len(candidates),
+        top_k=top_k,
+    )
+
+    # Find pairs involving the original query (index 0)
+    expanded = set()
+    for score, idx1, idx2 in pairs:
+        if score < threshold:
+            continue
+        if idx1 == 0 and idx2 < len(candidates):
+            expanded.add(candidates[idx2])
+        elif idx2 == 0 and idx1 < len(candidates):
+            expanded.add(candidates[idx1])
+
+    # Always include the original query if not already present and we have space
+    result = list(expanded)
+    if query not in result:
+        result.insert(0, query)
+
+    return result[:top_k]
 
 
 def semantic_search(

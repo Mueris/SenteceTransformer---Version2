@@ -52,10 +52,19 @@ from .util import (
     is_sentence_transformer_model,
     load_dir_path,
     load_file_path,
+    normalize_embeddings,
     save_to_hub_args_decorator,
     truncate_embeddings,
 )
-from .util.retrieval import semantic_search
+from .util.retrieval import (
+    Bm25Indexer,
+    bm25_search,
+    build_bm25_index,
+    hybrid_search,
+    hybrid_search_batch,
+    semantic_search,
+)
+from .util.similarity import cos_sim, dot_score
 
 logger = logging.getLogger(__name__)
 
@@ -68,14 +77,55 @@ class SemanticSearchIndex:
     corpus: list[str]
     corpus_embeddings: Tensor | np.ndarray | list[Tensor]
 
-    def search(self, query: str, top_k: int = 5, use_cache: bool = False) -> list[dict[str, int | float | str]]:
-        """Search the indexed corpus for a single query."""
+    def search(
+        self,
+        query: str,
+        top_k: int = 5,
+        use_cache: bool = False,
+        use_hybrid_search: bool = False,
+        use_expanded_queries: bool = False,
+        expand_top_k: int = 5,
+        expand_threshold: float = 0.8,
+        similarity: str = "cosine",
+    ) -> list[dict[str, int | float | str]]:
+        """Search the indexed corpus for a single query.
+
+        Args:
+            query: The query string.
+            top_k: Number of top results to return.
+            use_cache: Whether to use embedding cache.
+            use_hybrid_search: If True, use hybrid search instead of semantic search.
+            use_expanded_queries: If True, expand the query using semantic similarity.
+            expand_top_k: Maximum expanded queries to use.
+            expand_threshold: Minimum similarity threshold for expanded queries.
+            similarity: Similarity function. "cosine" (default) or "dot" for normalized dot product.
+
+        Returns:
+            List of search results with corpus_id, score, and text.
+        """
+        if use_hybrid_search:
+            return self.model.hybrid_search(
+                query=query,
+                corpus=self.corpus,
+                top_k=top_k,
+                use_cache=use_cache,
+                corpus_embeddings=self.corpus_embeddings,
+                bm25_index=None,
+                use_expanded_queries=use_expanded_queries,
+                expand_top_k=expand_top_k,
+                expand_threshold=expand_threshold,
+                similarity=similarity,
+            )
         return self.model.semantic_search(
             query=query,
             corpus=self.corpus,
             top_k=top_k,
             use_cache=use_cache,
             corpus_embeddings=self.corpus_embeddings,
+            use_expanded_queries=use_expanded_queries,
+            expand_top_k=expand_top_k,
+            expand_threshold=expand_threshold,
+            similarity=similarity,
         )
 
     def search_batch(
@@ -83,8 +133,37 @@ class SemanticSearchIndex:
         queries: list[str],
         top_k: int = 5,
         use_cache: bool = False,
+        use_hybrid_search: bool = False,
+        use_expanded_queries: bool = False,
+        expand_top_k: int = 5,
+        expand_threshold: float = 0.8,
     ) -> list[list[dict[str, int | float | str]]]:
-        """Search the indexed corpus for multiple queries."""
+        """Search the indexed corpus for multiple queries.
+
+        Args:
+            queries: List of query strings.
+            top_k: Number of top results per query.
+            use_cache: Whether to use embedding cache.
+            use_hybrid_search: If True, use hybrid search instead of semantic search.
+            use_expanded_queries: If True, expand each query using semantic similarity.
+            expand_top_k: Maximum expanded queries to use.
+            expand_threshold: Minimum similarity threshold for expanded queries.
+
+        Returns:
+            List of search results per query.
+        """
+        if use_hybrid_search:
+            return self.model.hybrid_search_batch(
+                queries=queries,
+                corpus=self.corpus,
+                top_k=top_k,
+                use_cache=use_cache,
+                corpus_embeddings=self.corpus_embeddings,
+                bm25_index=None,
+                use_expanded_queries=use_expanded_queries,
+                expand_top_k=expand_top_k,
+                expand_threshold=expand_threshold,
+            )
         return self.model.semantic_search_batch(
             queries=queries,
             corpus=self.corpus,
@@ -92,6 +171,226 @@ class SemanticSearchIndex:
             use_cache=use_cache,
             corpus_embeddings=self.corpus_embeddings,
         )
+
+
+@dataclass
+class HybridSearchIndex:
+    """Hybrid search index combining BM25 and dense embeddings."""
+
+    model: "SentenceTransformer"
+    corpus: list[str]
+    corpus_embeddings: Tensor | np.ndarray | list[Tensor]
+    bm25_index: Bm25Indexer
+
+    def search(
+        self,
+        query: str,
+        top_k: int = 5,
+        use_cache: bool = False,
+        bm25_weight: float = 0.35,
+        dense_weight: float = 0.65,
+        k1: float = 1.5,
+        b: float = 0.75,
+        use_expanded_queries: bool = False,
+        expand_top_k: int = 5,
+        expand_threshold: float = 0.8,
+    ) -> list[dict[str, int | float | str]]:
+        """Search the indexed corpus using hybrid scoring.
+
+        Args:
+            query: The query string.
+            top_k: Number of top results to return.
+            use_cache: Whether to use embedding cache.
+            bm25_weight: Weight for BM25 scores.
+            dense_weight: Weight for dense similarity scores.
+            k1: BM25 k1 parameter.
+            b: BM25 b parameter.
+            use_expanded_queries: If True, expand the query using semantic similarity.
+            expand_top_k: Maximum expanded queries to use.
+            expand_threshold: Minimum similarity threshold for expanded queries.
+
+        Returns:
+            List of search results with corpus_id, score, and text.
+        """
+        return self.model.hybrid_search(
+            query=query,
+            corpus=self.corpus,
+            top_k=top_k,
+            use_cache=use_cache,
+            corpus_embeddings=self.corpus_embeddings,
+            bm25_index=self.bm25_index,
+            bm25_weight=bm25_weight,
+            dense_weight=dense_weight,
+            k1=k1,
+            b=b,
+            use_expanded_queries=use_expanded_queries,
+            expand_top_k=expand_top_k,
+            expand_threshold=expand_threshold,
+        )
+
+    def search_batch(
+        self,
+        queries: list[str],
+        top_k: int = 5,
+        use_cache: bool = False,
+        bm25_weight: float = 0.35,
+        dense_weight: float = 0.65,
+        k1: float = 1.5,
+        b: float = 0.75,
+        use_expanded_queries: bool = False,
+        expand_top_k: int = 5,
+        expand_threshold: float = 0.8,
+    ) -> list[list[dict[str, int | float | str]]]:
+        """Search the indexed corpus for multiple queries using hybrid scoring.
+
+        Args:
+            queries: List of query strings.
+            top_k: Number of top results per query.
+            use_cache: Whether to use embedding cache.
+            bm25_weight: Weight for BM25 scores.
+            dense_weight: Weight for dense similarity scores.
+            k1: BM25 k1 parameter.
+            b: BM25 b parameter.
+            use_expanded_queries: If True, expand each query using semantic similarity.
+            expand_top_k: Maximum expanded queries to use.
+            expand_threshold: Minimum similarity threshold for expanded queries.
+
+        Returns:
+            List of search results per query.
+        """
+        return self.model.hybrid_search_batch(
+            queries=queries,
+            corpus=self.corpus,
+            top_k=top_k,
+            use_cache=use_cache,
+            corpus_embeddings=self.corpus_embeddings,
+            bm25_index=self.bm25_index,
+            bm25_weight=bm25_weight,
+            dense_weight=dense_weight,
+            k1=k1,
+            b=b,
+            use_expanded_queries=use_expanded_queries,
+            expand_top_k=expand_top_k,
+            expand_threshold=expand_threshold,
+        )
+
+
+@dataclass
+class Bm25SearchIndex:
+    """Keyword-only search index using BM25."""
+
+    corpus: list[str]
+    bm25_index: Bm25Indexer
+    model: "SentenceTransformer | None" = None
+
+    def search(
+        self,
+        query: str,
+        top_k: int = 5,
+        k1: float = 1.5,
+        b: float = 0.75,
+        use_expanded_queries: bool = False,
+        expand_top_k: int = 5,
+        expand_threshold: float = 0.8,
+    ) -> list[dict[str, int | float | str]]:
+        """Search the indexed corpus using BM25 scoring.
+
+        Args:
+            query: The query string.
+            top_k: Number of top results to return.
+            k1: BM25 k1 parameter.
+            b: BM25 b parameter.
+            use_expanded_queries: If True, expand the query using semantic similarity.
+            expand_top_k: Maximum expanded queries to use.
+            expand_threshold: Minimum similarity threshold for expanded queries.
+
+        Returns:
+            List of search results with corpus_id, score, and text.
+        """
+        if use_expanded_queries and self.model is not None:
+            expanded_queries = self.model.expand_query(
+                query,
+                corpus=self.corpus,
+                top_k=expand_top_k,
+                threshold=expand_threshold,
+            )
+            all_results = []
+            for q in expanded_queries:
+                hits = bm25_search(
+                    query=q,
+                    corpus=self.corpus,
+                    top_k=top_k,
+                    index=self.bm25_index,
+                    k1=k1,
+                    b=b,
+                )
+                all_results.append(hits)
+            # Merge results by max score
+            merged = self.model._merge_search_results(all_results, top_k=top_k)
+            return [
+                {
+                    "corpus_id": hit["corpus_id"],
+                    "score": float(hit["score"]),
+                    "text": self.corpus[hit["corpus_id"]],
+                }
+                for hit in merged
+            ]
+
+        hits = bm25_search(
+            query=query,
+            corpus=self.corpus,
+            top_k=top_k,
+            index=self.bm25_index,
+            k1=k1,
+            b=b,
+        )
+        return [
+            {
+                "corpus_id": hit["corpus_id"],
+                "score": float(hit["score"]),
+                "text": self.corpus[hit["corpus_id"]],
+            }
+            for hit in hits
+        ]
+
+    def search_batch(
+        self,
+        queries: list[str],
+        top_k: int = 5,
+        k1: float = 1.5,
+        b: float = 0.75,
+        use_expanded_queries: bool = False,
+        expand_top_k: int = 5,
+        expand_threshold: float = 0.8,
+    ) -> list[list[dict[str, int | float | str]]]:
+        """Search the indexed corpus for multiple queries using BM25 scoring.
+
+        Args:
+            queries: List of query strings.
+            top_k: Number of top results per query.
+            k1: BM25 k1 parameter.
+            b: BM25 b parameter.
+            use_expanded_queries: If True, expand each query using semantic similarity.
+            expand_top_k: Maximum expanded queries to use.
+            expand_threshold: Minimum similarity threshold for expanded queries.
+
+        Returns:
+            List of search results per query.
+        """
+        results = []
+        for query in queries:
+            results.append(
+                self.search(
+                    query,
+                    top_k=top_k,
+                    k1=k1,
+                    b=b,
+                    use_expanded_queries=use_expanded_queries,
+                    expand_top_k=expand_top_k,
+                    expand_threshold=expand_threshold,
+                )
+            )
+        return results
 
 
 class SentenceTransformer(nn.Sequential, FitMixin, PeftAdapterMixin):
@@ -516,6 +815,26 @@ class SentenceTransformer(nn.Sequential, FitMixin, PeftAdapterMixin):
             "misses": self._cache_stats["misses"],
         }
 
+    @staticmethod
+    def _merge_search_results(
+        search_results: list[list[dict[str, int | float]]],
+        top_k: int,
+    ) -> list[dict[str, int | float]]:
+        """Merge multiple search result lists by taking the max score per corpus_id."""
+        if not search_results:
+            return []
+
+        scores: dict[int, float] = {}
+        for hits in search_results:
+            for hit in hits:
+                corpus_id = int(hit["corpus_id"])
+                score = float(hit["score"])
+                if corpus_id not in scores or score > scores[corpus_id]:
+                    scores[corpus_id] = score
+
+        ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)[:top_k]
+        return [{"corpus_id": corpus_id, "score": score} for corpus_id, score in ranked]
+
     def semantic_search(
         self,
         query: str,
@@ -523,6 +842,10 @@ class SentenceTransformer(nn.Sequential, FitMixin, PeftAdapterMixin):
         top_k: int = 5,
         use_cache: bool = False,
         corpus_embeddings: Tensor | np.ndarray | list[Tensor] | None = None,
+        use_expanded_queries: bool = False,
+        expand_top_k: int = 5,
+        expand_threshold: float = 0.8,
+        similarity: str = "cosine",
     ) -> list[dict[str, int | float | str]]:
         """Perform semantic search by encoding query and corpus with a single call.
 
@@ -538,6 +861,16 @@ class SentenceTransformer(nn.Sequential, FitMixin, PeftAdapterMixin):
             corpus_embeddings (Optional[Union[Tensor, ndarray, List[Tensor]]], optional):
                 Precomputed corpus embeddings. If provided, these embeddings are used
                 instead of encoding the corpus. Defaults to None.
+            use_expanded_queries (bool, optional): Whether to expand the query using
+                semantic similarity before searching. Defaults to False.
+            expand_top_k (int, optional): Maximum number of expanded queries to use.
+                Defaults to 5.
+            expand_threshold (float, optional): Minimum cosine similarity threshold
+                for expanded queries. Defaults to 0.8.
+            similarity (str, optional): Similarity function to use. Options are "cosine"
+                (default, uses cosine similarity) or "dot" (normalizes embeddings and uses
+                dot product, which is mathematically equivalent to cosine similarity but
+                can be more efficient when embeddings are reused). Defaults to "cosine".
 
         Returns:
             List[Dict[str, Union[int, float, str]]]: A list of results with the keys:
@@ -562,16 +895,47 @@ class SentenceTransformer(nn.Sequential, FitMixin, PeftAdapterMixin):
                 results = model.semantic_search(query, corpus, top_k=2, use_cache=True)
                 for result in results:
                     print(result["text"], result["score"])
+
+                # Use dot product similarity (more efficient for repeated queries)
+                results = model.semantic_search(query, corpus, top_k=2, similarity="dot")
         """
         if not corpus:
             return []
 
-        query_embedding = self.encode(query, convert_to_tensor=True, use_cache=use_cache)
+        if use_expanded_queries:
+            expanded_queries = self.expand_query(
+                query,
+                corpus=corpus,
+                top_k=expand_top_k,
+                threshold=expand_threshold,
+            )
+            if not expanded_queries:
+                return []
+            query_embedding = self.encode(expanded_queries, convert_to_tensor=True, use_cache=use_cache)
+        else:
+            query_embedding = self.encode(query, convert_to_tensor=True, use_cache=use_cache)
+
         if corpus_embeddings is None:
             corpus_embeddings = self.encode(corpus, convert_to_tensor=True, use_cache=use_cache)
 
-        search_results = semantic_search(query_embedding, corpus_embeddings, top_k=top_k)
-        hits = search_results[0] if search_results else []
+        # Determine score function and normalize embeddings if needed
+        if similarity == "dot":
+            # Ensure 2D tensors for normalization
+            if query_embedding.dim() == 1:
+                query_embedding = query_embedding.unsqueeze(0)
+            if corpus_embeddings.dim() == 1:
+                corpus_embeddings = corpus_embeddings.unsqueeze(0)
+            query_embedding = normalize_embeddings(query_embedding)
+            corpus_embeddings = normalize_embeddings(corpus_embeddings)
+            score_fn = dot_score
+        else:
+            score_fn = cos_sim
+
+        search_results = semantic_search(query_embedding, corpus_embeddings, top_k=top_k, score_function=score_fn)
+        if use_expanded_queries:
+            hits = self._merge_search_results(search_results, top_k=top_k)
+        else:
+            hits = search_results[0] if search_results else []
 
         return [
             {
@@ -589,6 +953,7 @@ class SentenceTransformer(nn.Sequential, FitMixin, PeftAdapterMixin):
         top_k: int = 5,
         use_cache: bool = False,
         corpus_embeddings: Tensor | np.ndarray | list[Tensor] | None = None,
+        similarity: str = "cosine",
     ) -> list[list[dict[str, int | float | str]]]:
         """Perform semantic search for multiple queries in a single call.
 
@@ -604,6 +969,10 @@ class SentenceTransformer(nn.Sequential, FitMixin, PeftAdapterMixin):
             corpus_embeddings (Optional[Union[Tensor, ndarray, List[Tensor]]], optional):
                 Precomputed corpus embeddings. If provided, these embeddings are used
                 instead of encoding the corpus. Defaults to None.
+            similarity (str, optional): Similarity function to use. Options are "cosine"
+                (default, uses cosine similarity) or "dot" (normalizes embeddings and uses
+                dot product, which is mathematically equivalent to cosine similarity but
+                can be more efficient when embeddings are reused). Defaults to "cosine".
 
         Returns:
             List[List[Dict[str, Union[int, float, str]]]]: A list with one entry per query.
@@ -641,7 +1010,15 @@ class SentenceTransformer(nn.Sequential, FitMixin, PeftAdapterMixin):
         if corpus_embeddings is None:
             corpus_embeddings = self.encode(corpus, convert_to_tensor=True, use_cache=use_cache)
 
-        search_results = semantic_search(query_embeddings, corpus_embeddings, top_k=top_k)
+        # Determine score function and normalize embeddings if needed
+        if similarity == "dot":
+            query_embeddings = normalize_embeddings(query_embeddings)
+            corpus_embeddings = normalize_embeddings(corpus_embeddings)
+            score_fn = dot_score
+        else:
+            score_fn = cos_sim
+
+        search_results = semantic_search(query_embeddings, corpus_embeddings, top_k=top_k, score_function=score_fn)
 
         return [
             [
@@ -695,6 +1072,354 @@ class SentenceTransformer(nn.Sequential, FitMixin, PeftAdapterMixin):
             corpus=corpus,
             corpus_embeddings=corpus_embeddings,
         )
+
+    def bm25_search(
+        self,
+        query: str,
+        corpus: list[str],
+        top_k: int = 5,
+        bm25_index: Bm25Indexer | None = None,
+        k1: float = 1.5,
+        b: float = 0.75,
+    ) -> list[dict[str, int | float | str]]:
+        """Perform keyword search using BM25 scoring.
+
+        Args:
+            query (str): The query sentence.
+            corpus (List[str]): A list of corpus sentences to search.
+            top_k (int, optional): Number of top results to return. Defaults to 5.
+            bm25_index (Optional[Bm25Indexer], optional): Precomputed BM25 index.
+            k1 (float, optional): BM25 k1 parameter. Defaults to 1.5.
+            b (float, optional): BM25 b parameter. Defaults to 0.75.
+
+        Returns:
+            List[Dict[str, Union[int, float, str]]]: A list of results with the keys:
+                - ``corpus_id``: Index of the corpus item
+                - ``score``: BM25 score
+                - ``text``: The corpus sentence
+        """
+        hits = bm25_search(query, corpus, top_k=top_k, index=bm25_index, k1=k1, b=b)
+        return [
+            {
+                "corpus_id": hit["corpus_id"],
+                "score": float(hit["score"]),
+                "text": corpus[hit["corpus_id"]],
+            }
+            for hit in hits
+        ]
+
+    def hybrid_search(
+        self,
+        query: str,
+        corpus: list[str],
+        top_k: int = 5,
+        use_cache: bool = False,
+        corpus_embeddings: Tensor | np.ndarray | list[Tensor] | None = None,
+        bm25_index: Bm25Indexer | None = None,
+        bm25_weight: float = 0.35,
+        dense_weight: float = 0.65,
+        k1: float = 1.5,
+        b: float = 0.75,
+        use_expanded_queries: bool = False,
+        expand_top_k: int = 5,
+        expand_threshold: float = 0.8,
+        similarity: str = "cosine",
+    ) -> list[dict[str, int | float | str]]:
+        """Perform hybrid search combining BM25 and dense similarity.
+
+        Args:
+            query (str): The query sentence.
+            corpus (List[str]): A list of corpus sentences to search.
+            top_k (int, optional): Number of top results to return. Defaults to 5.
+            use_cache (bool, optional): Whether to use the embedding cache. Defaults to False.
+            corpus_embeddings (Optional[Union[Tensor, ndarray, List[Tensor]]], optional):
+                Precomputed corpus embeddings. If provided, these embeddings are used
+                instead of encoding the corpus. Defaults to None.
+            bm25_index (Optional[Bm25Indexer], optional): Precomputed BM25 index.
+            bm25_weight (float, optional): Weight for BM25 scores. Defaults to 0.35.
+            dense_weight (float, optional): Weight for dense similarity scores. Defaults to 0.65.
+            k1 (float, optional): BM25 k1 parameter. Defaults to 1.5.
+            b (float, optional): BM25 b parameter. Defaults to 0.75.
+            use_expanded_queries (bool, optional): Whether to expand the query using
+                semantic similarity before searching. Defaults to False.
+            expand_top_k (int, optional): Maximum number of expanded queries to use.
+                Defaults to 5.
+            expand_threshold (float, optional): Minimum cosine similarity threshold
+                for expanded queries. Defaults to 0.8.
+            similarity (str, optional): Similarity function for dense embeddings. Options are "cosine"
+                (default, uses cosine similarity) or "dot" (normalizes embeddings and uses
+                dot product, which is mathematically equivalent to cosine similarity but
+                can be more efficient when embeddings are reused). Defaults to "cosine".
+
+        Returns:
+            List[Dict[str, Union[int, float, str]]]: A list of results with the keys:
+                - ``corpus_id``: Index of the corpus item
+                - ``score``: Hybrid score
+                - ``text``: The corpus sentence
+        """
+        if not corpus:
+            return []
+
+        if use_expanded_queries:
+            expanded_queries = self.expand_query(
+                query,
+                corpus=corpus,
+                top_k=expand_top_k,
+                threshold=expand_threshold,
+            )
+            if not expanded_queries:
+                return []
+            query_embedding = self.encode(expanded_queries, convert_to_tensor=True, use_cache=use_cache)
+        else:
+            query_embedding = self.encode(query, convert_to_tensor=True, use_cache=use_cache)
+
+        if corpus_embeddings is None:
+            corpus_embeddings = self.encode(corpus, convert_to_tensor=True, use_cache=use_cache)
+
+        # Normalize embeddings for dot product similarity (more efficient)
+        if similarity == "dot":
+            query_embedding = normalize_embeddings(query_embedding)
+            corpus_embeddings = normalize_embeddings(corpus_embeddings)
+
+        if use_expanded_queries:
+            search_results = hybrid_search_batch(
+                queries=expanded_queries,
+                corpus=corpus,
+                query_embeddings=query_embedding,
+                corpus_embeddings=corpus_embeddings,
+                top_k=top_k,
+                bm25_index=bm25_index,
+                bm25_weight=bm25_weight,
+                dense_weight=dense_weight,
+                k1=k1,
+                b=b,
+            )
+            hits = self._merge_search_results(search_results, top_k=top_k)
+        else:
+            hits = hybrid_search(
+                query=query,
+                corpus=corpus,
+                query_embedding=query_embedding,
+                corpus_embeddings=corpus_embeddings,
+                top_k=top_k,
+                bm25_index=bm25_index,
+                bm25_weight=bm25_weight,
+                dense_weight=dense_weight,
+                k1=k1,
+                b=b,
+            )
+
+        return [
+            {
+                "corpus_id": hit["corpus_id"],
+                "score": float(hit["score"]),
+                "text": corpus[hit["corpus_id"]],
+            }
+            for hit in hits
+        ]
+
+    def hybrid_search_batch(
+        self,
+        queries: list[str],
+        corpus: list[str],
+        top_k: int = 5,
+        use_cache: bool = False,
+        corpus_embeddings: Tensor | np.ndarray | list[Tensor] | None = None,
+        bm25_index: Bm25Indexer | None = None,
+        bm25_weight: float = 0.35,
+        dense_weight: float = 0.65,
+        k1: float = 1.5,
+        b: float = 0.75,
+        use_expanded_queries: bool = False,
+        expand_top_k: int = 5,
+        expand_threshold: float = 0.8,
+    ) -> list[list[dict[str, int | float | str]]]:
+        """Perform hybrid search for multiple queries in a single call.
+
+        Args:
+            queries (List[str]): A list of query sentences.
+            corpus (List[str]): A list of corpus sentences to search.
+            top_k (int, optional): Number of top results to return per query. Defaults to 5.
+            use_cache (bool, optional): Whether to use the embedding cache. Defaults to False.
+            corpus_embeddings (Optional[Union[Tensor, ndarray, List[Tensor]]], optional):
+                Precomputed corpus embeddings. If provided, these embeddings are used
+                instead of encoding the corpus. Defaults to None.
+            bm25_index (Optional[Bm25Indexer], optional): Precomputed BM25 index.
+            bm25_weight (float, optional): Weight for BM25 scores. Defaults to 0.35.
+            dense_weight (float, optional): Weight for dense similarity scores. Defaults to 0.65.
+            k1 (float, optional): BM25 k1 parameter. Defaults to 1.5.
+            b (float, optional): BM25 b parameter. Defaults to 0.75.
+            use_expanded_queries (bool, optional): If True, expand each query using semantic
+                similarity. Defaults to False.
+            expand_top_k (int, optional): Maximum expanded queries to use. Defaults to 5.
+            expand_threshold (float, optional): Minimum similarity threshold for expanded
+                queries. Defaults to 0.8.
+
+        Returns:
+            List[List[Dict[str, Union[int, float, str]]]]: A list with one entry per query.
+            Each entry is a list of results with the keys:
+                - ``corpus_id``: Index of the corpus item
+                - ``score``: Hybrid score
+                - ``text``: The corpus sentence
+        """
+        if not corpus or not queries:
+            return []
+
+        # Handle query expansion if enabled
+        if use_expanded_queries:
+            all_results = []
+            for query in queries:
+                expanded_queries = self.expand_query(
+                    query,
+                    corpus=corpus,
+                    top_k=expand_top_k,
+                    threshold=expand_threshold,
+                )
+                # Search with expanded queries and merge results
+                query_results = []
+                for q in expanded_queries:
+                    single_result = self.hybrid_search(
+                        q,
+                        corpus,
+                        top_k=top_k,
+                        use_cache=use_cache,
+                        corpus_embeddings=corpus_embeddings,
+                        bm25_index=bm25_index,
+                        bm25_weight=bm25_weight,
+                        dense_weight=dense_weight,
+                        k1=k1,
+                        b=b,
+                    )
+                    query_results.append(single_result)
+                merged = self._merge_search_results(query_results, top_k=top_k)
+                all_results.append(merged)
+            return all_results
+
+        query_embeddings = self.encode(queries, convert_to_tensor=True, use_cache=use_cache)
+        if corpus_embeddings is None:
+            corpus_embeddings = self.encode(corpus, convert_to_tensor=True, use_cache=use_cache)
+
+        search_results = hybrid_search_batch(
+            queries=queries,
+            corpus=corpus,
+            query_embeddings=query_embeddings,
+            corpus_embeddings=corpus_embeddings,
+            top_k=top_k,
+            bm25_index=bm25_index,
+            bm25_weight=bm25_weight,
+            dense_weight=dense_weight,
+            k1=k1,
+            b=b,
+        )
+
+        return [
+            [
+                {
+                    "corpus_id": hit["corpus_id"],
+                    "score": float(hit["score"]),
+                    "text": corpus[hit["corpus_id"]],
+                }
+                for hit in hits
+            ]
+            for hits in search_results
+        ]
+
+    def build_hybrid_search_index(
+        self,
+        corpus: list[str],
+        use_cache: bool = False,
+        corpus_embeddings: Tensor | np.ndarray | list[Tensor] | None = None,
+        bm25_index: Bm25Indexer | None = None,
+    ) -> HybridSearchIndex:
+        """Build a reusable hybrid search index.
+
+        Args:
+            corpus (List[str]): The corpus texts to index.
+            use_cache (bool, optional): Whether to use the embedding cache. Defaults to False.
+            corpus_embeddings (Optional[Union[Tensor, ndarray, List[Tensor]]], optional):
+                Precomputed corpus embeddings. If provided, these embeddings are used
+                instead of encoding the corpus. Defaults to None.
+            bm25_index (Optional[Bm25Indexer], optional): Precomputed BM25 index.
+
+        Returns:
+            HybridSearchIndex: An index object with ``search`` and ``search_batch`` helpers.
+        """
+        if corpus_embeddings is None:
+            corpus_embeddings = self.encode(corpus, convert_to_tensor=True, use_cache=use_cache)
+
+        if bm25_index is None:
+            bm25_index = build_bm25_index(corpus)
+
+        return HybridSearchIndex(
+            model=self,
+            corpus=corpus,
+            corpus_embeddings=corpus_embeddings,
+            bm25_index=bm25_index,
+        )
+
+    def build_bm25_index(
+        self,
+        corpus: list[str],
+    ) -> Bm25SearchIndex:
+        """Build a reusable BM25 index.
+
+        Args:
+            corpus (List[str]): The corpus texts to index.
+
+        Returns:
+            Bm25SearchIndex: An index object with ``search`` and ``search_batch`` helpers.
+        """
+        return Bm25SearchIndex(corpus=corpus, bm25_index=build_bm25_index(corpus), model=self)
+
+    def expand_query(
+        self,
+        query: str,
+        corpus: list[str] | None = None,
+        top_k: int = 5,
+        threshold: float = 0.8,
+    ) -> list[str]:
+        """Generate expanded queries based on semantic similarity using embeddings.
+
+        This method generates additional queries that are semantically similar to the
+        original query. It uses the model's embedding capabilities to find or generate
+        semantically similar text, avoiding rule-based approaches.
+
+        The expanded queries can be used with the existing semantic_search and
+        hybrid_search pipelines to improve retrieval coverage.
+
+        Args:
+            query (str): The original query string.
+            corpus (Optional[List[str]], optional): Optional corpus of sentences to
+                find similar ones. If provided, similar sentences are found from the
+                corpus using semantic similarity. Defaults to None.
+            top_k (int, optional): Maximum number of expanded queries to return.
+                Defaults to 5.
+            threshold (float, optional): Minimum cosine similarity threshold for
+                considering a query as expanded. Defaults to 0.8.
+
+        Returns:
+            List[str]: List of expanded queries that are semantically similar to
+                the original query. The original query is included if it meets the
+                threshold.
+
+        Example:
+            ::
+
+                from sentence_transformers import SentenceTransformer
+
+                model = SentenceTransformer("all-MiniLM-L6-v2")
+                corpus = ["Machine learning is AI.", "Deep learning uses neural nets."]
+
+                # Expand query
+                expanded = model.expand_query("What is ML?", corpus=corpus, top_k=3)
+
+                # Use expanded queries with semantic search
+                for q in expanded:
+                    results = model.semantic_search(q, corpus, top_k=2)
+        """
+        from sentence_transformers.util import expand_query as _expand_query
+
+        return _expand_query(self, query, corpus=corpus, top_k=top_k, threshold=threshold)
 
     def get_model_kwargs(self) -> list[str]:
         """

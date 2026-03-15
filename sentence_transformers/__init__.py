@@ -1,72 +1,111 @@
 from __future__ import annotations
 
-__version__ = "5.4.0.dev0"
-__MODEL_HUB_ORGANIZATION__ = "sentence-transformers"
-
-import importlib
-import os
-import warnings
-
-from sentence_transformers.backend import (
-    export_dynamic_quantized_onnx_model,
-    export_optimized_onnx_model,
-    export_static_quantized_openvino_model,
+from .decorators import save_to_hub_args_decorator
+from .distributed import all_gather, all_gather_with_grad
+from .environment import (
+    check_package_availability,
+    get_device_name,
+    is_accelerate_available,
+    is_datasets_available,
+    is_training_available,
 )
-from sentence_transformers.cross_encoder import (
-    CrossEncoder,
-    CrossEncoderModelCardData,
-    CrossEncoderTrainer,
-    CrossEncoderTrainingArguments,
+from .file_io import disabled_tqdm, http_get, is_sentence_transformer_model, load_dir_path, load_file_path
+from .hard_negatives import mine_hard_negatives
+from .misc import append_to_last_row, disable_datasets_caching, disable_logging, fullname, import_from_string
+from .retrieval import (
+    Bm25Indexer,
+    bm25_search,
+    build_bm25_index,
+    community_detection,
+    expand_query,
+    hybrid_search,
+    hybrid_search_batch,
+    information_retrieval,
+    paraphrase_mining,
+    paraphrase_mining_embeddings,
+    semantic_search,
 )
-from sentence_transformers.datasets import ParallelSentencesDataset, SentencesDataset
-from sentence_transformers.LoggingHandler import LoggingHandler
-from sentence_transformers.model_card import SentenceTransformerModelCardData
-from sentence_transformers.quantization import quantize_embeddings
-from sentence_transformers.readers import InputExample
-from sentence_transformers.sampler import DefaultBatchSampler, MultiDatasetDefaultBatchSampler
-from sentence_transformers.SentenceTransformer import SentenceTransformer
-from sentence_transformers.similarity_functions import SimilarityFunction
-from sentence_transformers.sparse_encoder import (
-    SparseEncoder,
-    SparseEncoderModelCardData,
-    SparseEncoderTrainer,
-    SparseEncoderTrainingArguments,
+from .similarity import (
+    cos_sim,
+    dot_score,
+    euclidean_sim,
+    manhattan_sim,
+    pairwise_angle_sim,
+    pairwise_cos_sim,
+    pairwise_dot_score,
+    pairwise_euclidean_sim,
+    pairwise_manhattan_sim,
+    pytorch_cos_sim,
 )
-from sentence_transformers.trainer import SentenceTransformerTrainer
-from sentence_transformers.training_args import SentenceTransformerTrainingArguments
-from sentence_transformers.util import mine_hard_negatives
-
-# If codecarbon is installed and the log level is not defined,
-# automatically overwrite the default to "error"
-if importlib.util.find_spec("codecarbon") and "CODECARBON_LOG_LEVEL" not in os.environ:
-    os.environ["CODECARBON_LOG_LEVEL"] = "error"
-
-# Globally silence PyTorch sparse CSR tensor beta warning
-warnings.filterwarnings("ignore", message="Sparse CSR tensor support is in beta state")
+from .tensor import (
+    _convert_to_batch,
+    _convert_to_batch_tensor,
+    _convert_to_tensor,
+    batch_to_device,
+    compute_count_vector,
+    normalize_embeddings,
+    select_max_active_dims,
+    to_scipy_coo,
+    truncate_embeddings,
+)
 
 __all__ = [
-    "LoggingHandler",
-    "SentencesDataset",
-    "ParallelSentencesDataset",
-    "SentenceTransformer",
-    "SimilarityFunction",
-    "InputExample",
-    "CrossEncoder",
-    "CrossEncoderTrainer",
-    "CrossEncoderTrainingArguments",
-    "CrossEncoderModelCardData",
-    "SentenceTransformerTrainer",
-    "SentenceTransformerTrainingArguments",
-    "SentenceTransformerModelCardData",
-    "SparseEncoder",
-    "SparseEncoderTrainer",
-    "SparseEncoderTrainingArguments",
-    "SparseEncoderModelCardData",
-    "quantize_embeddings",
-    "export_optimized_onnx_model",
-    "export_dynamic_quantized_onnx_model",
-    "export_static_quantized_openvino_model",
-    "DefaultBatchSampler",
-    "MultiDatasetDefaultBatchSampler",
+    # From decorators.py
+    "save_to_hub_args_decorator",
+    # From distributed.py
+    "all_gather",
+    "all_gather_with_grad",
+    # From environment.py
+    "get_device_name",
+    "check_package_availability",
+    "is_accelerate_available",
+    "is_datasets_available",
+    "is_training_available",
+    # From file_io.py
+    "is_sentence_transformer_model",
+    "load_dir_path",
+    "load_file_path",
+    "http_get",
+    "disabled_tqdm",
+    # From misc.py
+    "fullname",
+    "import_from_string",
+    "disable_datasets_caching",
+    "disable_logging",
+    "append_to_last_row",
+    # From retrieval.py
+    "Bm25Indexer",
+    "bm25_search",
+    "build_bm25_index",
+    "community_detection",
+    "expand_query",
+    "hybrid_search",
+    "hybrid_search_batch",
+    "information_retrieval",
+    "paraphrase_mining",
+    "paraphrase_mining_embeddings",
+    "semantic_search",
+    # From similarity.py
+    "cos_sim",
+    "dot_score",
+    "euclidean_sim",
+    "manhattan_sim",
+    "pairwise_angle_sim",
+    "pairwise_cos_sim",
+    "pairwise_dot_score",
+    "pairwise_euclidean_sim",
+    "pairwise_manhattan_sim",
+    "pytorch_cos_sim",
+    # From tensor.py
+    "_convert_to_batch",
+    "_convert_to_batch_tensor",
+    "_convert_to_tensor",
+    "batch_to_device",
+    "normalize_embeddings",
+    "select_max_active_dims",
+    "to_scipy_coo",
+    "truncate_embeddings",
+    "compute_count_vector",
+    # From hard_negatives.py
     "mine_hard_negatives",
 ]
