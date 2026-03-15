@@ -150,6 +150,88 @@ This allows efficient repeated queries against the same corpus.
 
 ---
 
+## 7. Hybrid Search (BM25 + Dense Retrieval)
+
+Hybrid search combines keyword-based BM25 scoring with dense embedding similarity. This enables workflows that blend exact lexical matches with semantic similarity.
+```python
+results = model.hybrid_search(
+    query="machine learning",
+    corpus=corpus,
+    top_k=2
+)
+```
+
+Hybrid search indices can also be reused for faster repeated queries.
+
+```python
+index = model.build_hybrid_search_index(corpus)
+results = index.search(
+    "machine learning",
+    top_k=2,
+    bm25_weight=0.4,
+    dense_weight=0.6
+)
+```
+---
+
+## 8. Query Expansion
+
+Query expansion generates additional queries based on semantic similarity to improve retrieval coverage.
+
+```python
+expanded = model.expand_query(
+    "What is ML?",
+    corpus=corpus,
+    top_k=3
+)
+```
+Expanded queries can then be used in semantic or hybrid search.
+---
+
+## 9. Embedded Query Expansion in Search
+
+Query expansion can be integrated directly into search pipelines.
+Example with semantic search:
+
+```python
+results = model.semantic_search(
+    "What is ML?",
+    corpus,
+    top_k=2,
+    use_expanded_queries=True
+)
+```
+Example with hybrid search:
+
+```python
+results = model.hybrid_search(
+    "machine learning",
+    corpus,
+    top_k=3,
+    use_expanded_queries=True
+)
+```
+---
+
+## 10. Similarity Selection (Cosine vs Dot Product)
+
+The search pipeline now allows selecting the similarity function.
+
+```python
+results = index.search(
+    "machine learning",
+    top_k=3,
+    similarity="dot"
+)
+```
+Supported options:
+* "cosine" (default)
+* "dot"
+When "dot" is selected, embeddings are normalized and compared using dot product.
+Dot product with normalized vectors is mathematically equivalent to cosine similarity but can be more efficient when embeddings are reused.
+
+---
+
 # Example Workflow
 
 ```python
@@ -183,9 +265,12 @@ Compared to the original repository, this version introduces:
 * simplified semantic search API
 * batch semantic search
 * reusable semantic search index
+* hybrid search (BM25 + dense retrieval)
+* query expansion using semantic similarity
+* embedded query expansion in search pipelines
+* similarity selection (cosine or dot product)
 
-These additions focus on improving the usability of the library for **retrieval and search-based applications**.
-
+These additions focus on improving the usability of the library for retrieval and search-based applications.
 ---
 
 # Intended Use
